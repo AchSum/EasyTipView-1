@@ -3,14 +3,8 @@
 //  EasyTips
 //
 //  Created by Nitish Makhija on 16/12/16.
+//  Copyright © 2016 Roadcast. All rights reserved.
 //
-#define weakify(var) __weak typeof(var) AHKWeak_##var = var;
-
-#define strongify(var) \
-_Pragma("clang diagnostic push") \
-_Pragma("clang diagnostic ignored \"-Wshadow\"") \
-__strong typeof(var) var = AHKWeak_##var; \
-_Pragma("clang diagnostic pop")
 
 #import "RCEasyTipView.h"
 #import "UIView+RCEssentials.h"
@@ -22,6 +16,15 @@ _Pragma("clang diagnostic pop")
 @end
 
 @implementation RCEasyTipPreferences
+
++(instancetype)sharedInstance{
+    static RCEasyTipPreferences *shared;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        shared = [[RCEasyTipPreferences alloc]initWithDefaultPreferences];
+    });
+    return shared;
+}
 
 - (instancetype)initWithDefaultPreferences {
     self = [super init];
@@ -49,7 +52,7 @@ _Pragma("clang diagnostic pop")
         _arrowWidth = 10;
         _foregroundColor = [UIColor whiteColor];
         _backgroundColor = [UIColor redColor];
-        _arrowPostion = Left;
+        _arrowPostion = Any;
         _textAlignment = NSTextAlignmentCenter;
         _borderWidth = 0;
         _borderColor = [UIColor clearColor];
@@ -98,6 +101,7 @@ _Pragma("clang diagnostic pop")
         _dismissFinalAlpha = 0;
         _showDuration = 0.7f;
         _dismissDuration = 0.7f;
+        _autoDismissDuration = 3;
     }
     return self;
 }
@@ -111,13 +115,36 @@ _Pragma("clang diagnostic pop")
 @property (nonatomic, weak) UIView *presentingView;
 @property (nonatomic, strong) UIView *dismissOverlay;
 @property (nonatomic, assign) CGPoint arrowTip;
-@property (nonatomic, weak) UIView *parentView;
+@property(nonatomic) UIImage *closeImage;
 
 @end
 
 @implementation RCEasyTipView
 
 #pragma mark - Override Methods
+
++(instancetype)showText:(NSString *)text forView:(UIView *)view withinSuperView:(UIView *)superView andAnimated:(BOOL)animated{
+    RCEasyTipView *tipView = [[RCEasyTipView alloc] initWithPreferences:[RCEasyTipPreferences sharedInstance] andText:text];
+    [tipView showAnimated:animated forView:view withinSuperView:superView];
+    return tipView;
+}
+
++(instancetype)showText:(NSString *)text withPreferences:(RCEasyTipPreferences *)preferences forView:(UIView *)view withinSuperView:(UIView *)superView andAnimated:(BOOL)animated{
+    
+    if (preferences == nil) { preferences = [RCEasyTipPreferences sharedInstance]; }
+    
+    RCEasyTipView *tipView = [[RCEasyTipView alloc] initWithPreferences:preferences andText:text];
+    [tipView showAnimated:animated forView:view withinSuperView:superView];
+    return tipView;
+}
+
++(instancetype)showText:(NSString*)text withPreferences:(RCEasyTipPreferences *)preferences forItem:(UIBarItem *)item withinSuperView:(UIView *)superView andAnimated:(BOOL)animated{
+    if (preferences == nil) { preferences = [RCEasyTipPreferences sharedInstance]; }
+    
+    RCEasyTipView *tipView = [[RCEasyTipView alloc] initWithPreferences:preferences andText:text];
+    [tipView showAnimated:animated forItem:item withinSuperView:superView];
+    return tipView;
+}
 
 - (void)drawRect:(CGRect)rect {
     ArrowPosition position = _preferences.drawing.arrowPostion;
@@ -161,8 +188,10 @@ _Pragma("clang diagnostic pop")
     self = [super init];
     if (self) {
         _preferences = preferences;
+        NSBundle *bundle = [NSBundle bundleForClass:[RCEasyTipView class]];
+        _closeImage = [UIImage imageNamed:@"close" inBundle:bundle compatibleWithTraitCollection:nil];
         self.backgroundColor = [UIColor clearColor];
-        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleRotation:) name:UIDeviceOrientationDidChangeNotification object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleRotation) name:UIDeviceOrientationDidChangeNotification object:nil];
     }
     return self;
 }
@@ -171,7 +200,10 @@ _Pragma("clang diagnostic pop")
     self = [super init];
     if(self) {
         _text = text;
-        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleRotation:) name:UIDeviceOrientationDidChangeNotification object:nil];
+        _preferences = [RCEasyTipPreferences sharedInstance];
+        NSBundle *bundle = [NSBundle bundleForClass:[RCEasyTipView class]];
+        _closeImage = [UIImage imageNamed:@"close" inBundle:bundle compatibleWithTraitCollection:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleRotation) name:UIDeviceOrientationDidChangeNotification object:nil];
     }
     return self;
 }
@@ -181,8 +213,10 @@ _Pragma("clang diagnostic pop")
     if (self) {
         _preferences = preferences;
         _text = text;
+        NSBundle *bundle = [NSBundle bundleForClass:[RCEasyTipView class]];
+        _closeImage = [UIImage imageNamed:@"close" inBundle:bundle compatibleWithTraitCollection:nil];
         self.backgroundColor = [UIColor clearColor];
-        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleRotation:) name:UIDeviceOrientationDidChangeNotification object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleRotation) name:UIDeviceOrientationDidChangeNotification object:nil];
     }
     return self;
 }
@@ -192,26 +226,19 @@ _Pragma("clang diagnostic pop")
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-- (void)arrangeWithinSuperView:(UIView *)superView shouldUpdateWidth:(BOOL)updateWidth {
+- (void)arrangeWithinSuperView:(UIView *)superView {
     ArrowPosition position = _preferences.drawing.arrowPostion;
     
     CGRect refViewFrame = [self.presentingView convertRect:self.presentingView.bounds toCoordinateSpace:superView];
     
-    CGRect superViewFrame = superView.frame;
-    //Fix for safeArea
-    if (@available(iOS 11.0, *)) {
-        superViewFrame = UIEdgeInsetsInsetRect(superViewFrame, superView.safeAreaInsets);
-        if (updateWidth) {
-            superViewFrame.size.width += superView.safeAreaInsets.right;
-        } else {
-            superViewFrame.size.height += superView.safeAreaInsets.bottom;
-        }
-    }
+    CGRect superViewFrame;
     
     if ([superView isKindOfClass:[UIScrollView class]]) {
         UIScrollView *scrollView = (UIScrollView *)superView;
         superViewFrame.origin = scrollView.frame.origin;
         superViewFrame.size = scrollView.contentSize;
+    } else {
+        superViewFrame = superView.frame;
     }
     
     CGRect frame = [self computeFrameWithPosition:position referenceFrame:refViewFrame superViewFrame:superViewFrame];
@@ -219,19 +246,20 @@ _Pragma("clang diagnostic pop")
     
     if (![self isFrame:frame forReferenceViewFrame:refViewFrame]) {
         for (NSNumber *value in allValues) {
-            CGRect newFrame = [self computeFrameWithPosition:value.integerValue referenceFrame:refViewFrame superViewFrame:superViewFrame];
-            if ([self isFrame:newFrame forReferenceViewFrame:refViewFrame]) {
-                if (position != Any) {
-                    NSLog(@"[EasyTipView - Info] The arrow position you chose %ld could not be applied. Instead, position <\(value)> has been applied! Please specify position ANY if you want EasyTipView to choose a position for you.", (long)position);
+            if (![value isEqualToNumber:[NSNumber numberWithInteger:position]]) {
+                CGRect newFrame = [self computeFrameWithPosition:value.integerValue referenceFrame:refViewFrame superViewFrame:superViewFrame];
+                if ([self isFrame:newFrame forReferenceViewFrame:refViewFrame]) {
+                    if (position != Any) {
+                        NSLog(@"[EasyTipView - Info] The arrow position you chose <\(position)> could not be applied. Instead, position <\(value)> has been applied! Please specify position <\(ArrowPosition.any)> if you want EasyTipView to choose a position for you.");
+                    }
+                    frame = newFrame;
+                    position = value.integerValue;
+                    _preferences.drawing.arrowPostion = value.integerValue;
+                    break;
                 }
-                frame = newFrame;
-                position = value.integerValue;
-                _preferences.drawing.arrowPostion = value.integerValue;
-                break;
             }
         }
     }
-    
     CGFloat arrowTipXOrigin;
     switch (position) {
         case Any:
@@ -279,7 +307,7 @@ _Pragma("clang diagnostic pop")
             yOrigin = center.y - [self getContentSize].height / 2;
             break;
         case Left:
-            xOrigin = refViewFrame.origin.x + refViewFrame.size.width;
+            xOrigin = refViewFrame.origin.x + [self getContentSize].width;
             yOrigin = refViewFrame.origin.y - [self getContentSize].height / 2;
             break;
     }
@@ -287,15 +315,15 @@ _Pragma("clang diagnostic pop")
     CGRect frame = CGRectMake(xOrigin, yOrigin, [self getContentSize].width,[self getContentSize].height);
     
     //frame adjusting horizontally
-    if (frame.origin.x < superViewFrame.origin.x) {
-        frame.origin.x = superViewFrame.origin.x;
+    if (frame.origin.x < 0) {
+        frame.origin.x = 0;
     } else if (CGRectGetMaxX(frame) > superViewFrame.size.width) {
         frame.origin.x = superViewFrame.size.width - frame.size.width;
     }
     
     //frame adjusting vertically
-    if (frame.origin.y < superViewFrame.origin.y) {
-        frame.origin.y = superViewFrame.origin.y;
+    if (frame.origin.y < 0) {
+        frame.origin.y = 0;
     } else if (CGRectGetMaxY(frame) > CGRectGetMaxY(superViewFrame)) {
         frame.origin.y = superViewFrame.size.height - frame.size.height;
     }
@@ -308,13 +336,13 @@ _Pragma("clang diagnostic pop")
 - (CGSize)getTextSize {
     NSDictionary *attributes = @{NSFontAttributeName:_preferences.drawing.font};
     
-    CGSize textSize = [self.text boundingRectWithSize:CGSizeMake(_preferences.positioning.maxWidth, CGFLOAT_MAX) options:NSStringDrawingUsesLineFragmentOrigin attributes:attributes context:nil].size;
+    CGSize textSize = [self.text boundingRectWithSize:CGSizeMake(_preferences.positioning.maxWidth - _closeImage.size.width - 8, CGFLOAT_MAX) options:NSStringDrawingUsesLineFragmentOrigin attributes:attributes context:nil].size;
     
-    textSize.width = ceil(textSize.width);
+    textSize.width = ceil(textSize.width) + _closeImage.size.width + 8;
     textSize.height = ceil(textSize.height);
     
     if (textSize.width < _preferences.drawing.arrowWidth) {
-        textSize.width = _preferences.drawing.arrowWidth;
+        textSize.width = _preferences.drawing.arrowWidth + _closeImage.size.width + 8;
     }
     return textSize;
     
@@ -371,7 +399,7 @@ _Pragma("clang diagnostic pop")
     if (![_preferences.drawing.borderColor isEqual:[UIColor clearColor]] && _preferences.drawing.borderWidth) {
         [self drawBorderWithPath:contourPath andContext:context];
     }
-    
+  
     CGPathRelease(contourPath);
 }
 - (void)drawTopBubbleShapeWithFrame:(CGRect)frame cornerRadius:(CGFloat)radius path:(CGMutablePathRef)path {
@@ -399,7 +427,7 @@ _Pragma("clang diagnostic pop")
     CGPathAddArcToPoint(path, &CGAffineTransformIdentity, frame.origin.x + frame.size.width, frame.origin.y, frame.origin.x, frame.origin.y, radius);
     CGPathAddArcToPoint(path, &CGAffineTransformIdentity, frame.origin.x, frame.origin.y, frame.origin.x, frame.origin.y + frame.size.height, radius);
     CGPathAddArcToPoint(path, &CGAffineTransformIdentity, frame.origin.x, frame.origin.y + frame.size.height, frame.origin.x + frame.size.width, frame.origin.y + frame.size.height, radius);
-    CGPathAddArcToPoint(path, &CGAffineTransformIdentity, frame.origin.x + frame.size.width, frame.origin.y + frame.size.height, frame.origin.x + frame.size.width, frame.size.height, radius);
+    CGPathAddArcToPoint(path, &CGAffineTransformIdentity, frame.origin.x + frame.size.width, frame.origin.y + frame.size.height, frame.origin.x + frame.size.width, frame.origin.y + frame.size.height, radius);
 }
 
 
@@ -420,20 +448,22 @@ _Pragma("clang diagnostic pop")
     paragraphStyle.alignment = _preferences.drawing.textAlignment;
     paragraphStyle.lineBreakMode = NSLineBreakByWordWrapping;
     
-    CGRect textRect = CGRectMake(bubbleFrame.origin.x + (bubbleFrame.size.width - [self getTextSize].width) / 2, bubbleFrame.origin.y + (bubbleFrame.size.height - [self getTextSize].height) / 2, [self getTextSize].width, [self getTextSize].height);
+    CGRect textRect = CGRectMake(bubbleFrame.origin.x + (bubbleFrame.size.width - [self getTextSize].width) / 2, bubbleFrame.origin.y + (bubbleFrame.size.height - [self getTextSize].height) / 2, [self getTextSize].width - _closeImage.size.width - 8, [self getTextSize].height);
     
     [self.text drawInRect:textRect withAttributes:@{NSFontAttributeName:_preferences.drawing.font, NSForegroundColorAttributeName: _preferences.drawing.foregroundColor, NSParagraphStyleAttributeName: paragraphStyle}];
+    
+    
+    CGRect imgFrame = CGRectMake(bubbleFrame.size.width - _closeImage.size.width - 8, textRect.origin.y + 4, _closeImage.size.width, _closeImage.size.height);
+    [_closeImage drawInRect:imgFrame];
 }
 
 #pragma mark - Actions
 
-- (void)handleRotation:(NSNotification *)notification {
+- (void)handleRotation {
     UIView *superView = self.superview;
     if (superView) {
-        weakify(self);
         [UIView animateWithDuration:0.3f animations:^{
-            strongify(self);
-            [self arrangeWithinSuperView:superView shouldUpdateWidth:((UIDevice *)notification.object).orientation == UIDeviceOrientationPortrait ? NO: YES];
+            [self arrangeWithinSuperView:superView];
             [self setNeedsDisplay];
         }];
     } else {
@@ -443,12 +473,10 @@ _Pragma("clang diagnostic pop")
 
 - (void)handleTap:(UIGestureRecognizer *)gesture {
     if (gesture.state == UIGestureRecognizerStateEnded) {
-        weakify(self);
         [self dismissWithCompletion:^{
-            strongify(self);
             //remove all the gsture here
             [self removeGestureRecognizer:gesture];
-            [self.dismissOverlay removeGestureRecognizer:gesture];
+            [_dismissOverlay removeGestureRecognizer:gesture];
         }];
     }
 }
@@ -464,9 +492,9 @@ _Pragma("clang diagnostic pop")
     CGFloat initialAlpha = _preferences.animating.showInitialAlpha;
     CGFloat damping = _preferences.animating.springDamping;
     CGFloat velocity = _preferences.animating.springVelocity;
-    self.parentView = superView;
+    
     self.presentingView = view;
-    [self arrangeWithinSuperView:superView shouldUpdateWidth: [UIDevice currentDevice].orientation == UIDeviceOrientationPortrait? NO: YES] ;
+    [self arrangeWithinSuperView:superView];
     
     self.transform = initialTransform;
     self.alpha = initialAlpha;
@@ -495,24 +523,28 @@ _Pragma("clang diagnostic pop")
     _ID = [RCEasyTipViewIDGenerator getUniqueViewID];
     
     if (animated) {
-        weakify(self);
         [UIView animateWithDuration:_preferences.animating.showDuration
                               delay:0
              usingSpringWithDamping:damping
               initialSpringVelocity:velocity
                             options:UIViewAnimationOptionCurveEaseInOut
                          animations:^{
-                             strongify(self);
                              self.transform = finalTransform;
                              self.alpha = 1;
                          }
                          completion:^(BOOL finished) {
-                             strongify(self)
-                             if (self.delegate && [self.delegate respondsToSelector:@selector(didShowTip:)]) {
-                                 [self.delegate didShowTip:self];
+                             if (_delegate && [_delegate respondsToSelector:@selector(didShowTip:)]) {
+                                 [_delegate didShowTip:self];
                              }
                          }];
     }
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(_preferences.animating.autoDismissDuration * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        
+        [self dismissWithCompletion:^{
+            
+        }];
+    });
 }
 
 - (void)showAnimated:(BOOL)animated forItem:(UIBarItem *)item withinSuperView:(UIView *)superView {
@@ -520,7 +552,7 @@ _Pragma("clang diagnostic pop")
     [self showAnimated:animated forView:view withinSuperView:superView];
 }
 
-- (void)dismissWithCompletion:(void (^)(void))completionBlock {
+- (void)dismissWithCompletion:(void (^)())completionBlock {
     CGFloat damping = _preferences.animating.springDamping;
     CGFloat velocity = _preferences.animating.springVelocity;
     if (_delegate && [_delegate respondsToSelector:@selector(willDismissTip:)]) {
@@ -529,24 +561,22 @@ _Pragma("clang diagnostic pop")
     if (_dismissOverlay) {
         [_dismissOverlay removeFromSuperview];
     }
-    weakify(self);
+
     [UIView animateWithDuration:_preferences.animating.dismissDuration
                           delay:0
          usingSpringWithDamping:damping
           initialSpringVelocity:velocity
                         options:UIViewAnimationOptionCurveEaseInOut
                      animations:^{
-                         strongify(self);
-                         self.transform = self.preferences.animating.dismissTransform;
-                         self.alpha = self.preferences.animating.dismissFinalAlpha;
+                         self.transform = _preferences.animating.dismissTransform;
+                         self.alpha = _preferences.animating.dismissFinalAlpha;
                      }
                      completion:^(BOOL finished) {
-                         strongify(self);
                          if (completionBlock) {
                              completionBlock();
                          }
-                         if (self.delegate && [self.delegate respondsToSelector:@selector(didDismissTip:)]) {
-                             [self.delegate didDismissTip:self];
+                         if (_delegate && [_delegate respondsToSelector:@selector(didDismissTip:)]) {
+                             [_delegate didDismissTip:self];
                          }
                          [self removeFromSuperview];
                          self.transform = CGAffineTransformIdentity;
@@ -554,4 +584,3 @@ _Pragma("clang diagnostic pop")
 }
 
 @end
-
